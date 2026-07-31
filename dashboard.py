@@ -36,7 +36,8 @@ def get_connection():
         host=os.getenv("POSTGRES_HOST"),
         database=os.getenv("POSTGRES_DB"),
         user=os.getenv("POSTGRES_USER"),
-        password=os.getenv("POSTGRES_PASSWORD")
+        password=os.getenv("POSTGRES_PASSWORD"),
+        sslmode="require"
     )
 
 db = get_connection()
