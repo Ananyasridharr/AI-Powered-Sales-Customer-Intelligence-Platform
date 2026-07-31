@@ -32,13 +32,7 @@ os.environ["no_proxy"] = "*"
 
 @st.cache_resource
 def get_connection():
-    return psycopg2.connect(
-        host=os.getenv("POSTGRES_HOST"),
-        database=os.getenv("POSTGRES_DB"),
-        user=os.getenv("POSTGRES_USER"),
-        password=os.getenv("POSTGRES_PASSWORD"),
-        sslmode="require"
-    )
+    return psycopg2.connect(os.getenv("DATABASE_URL"))
 
 db = get_connection()
 
