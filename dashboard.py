@@ -19,8 +19,7 @@ load_dotenv()
 # ============================================
 
 st.set_page_config(
-    page_title="NexusIQ — Sales Intelligence",
-    page_icon="📊",
+    page_title="Sales Intelligence Platform",
     layout="wide"
 )
 
