@@ -49,8 +49,22 @@ def load_revenue_by_city():
 
 @st.cache_data(ttl=300)
 def load_marketing_performance():
-    return run_query("SELECT dc.source, SUM(f.spend) AS total_spend, SUM(f.revenue) AS total_revenue, ROUND(SUM(f.revenue) / NULLIF(SUM(f.spend),0), 2) AS roas FROM warehouse.fact_marketing_perf f JOIN warehouse.dim_campaign dc ON f.campaign_id = dc.campaign_id GROUP BY dc.source ORDER BY roas DESC")
-
+    query = """
+    SELECT
+        dc.source,
+        SUM(f.spend) AS total_spend,
+        SUM(f.revenue) AS total_revenue,
+        ROUND(
+            (SUM(f.revenue) / NULLIF(SUM(f.spend), 0))::numeric,
+            2
+        ) AS roas
+    FROM warehouse.fact_marketing_perf f
+    JOIN warehouse.dim_campaign dc
+        ON f.campaign_id = dc.campaign_id
+    GROUP BY dc.source
+    ORDER BY roas DESC;
+    """
+    return run_query(query)
 @st.cache_data(ttl=300)
 def load_support_summary():
     return run_query("SELECT issue_type, COUNT(*) AS ticket_count, ROUND(AVG(resolution_hours)::numeric, 1) AS avg_hours, ROUND(AVG(satisfaction_score)::numeric, 2) AS avg_satisfaction FROM warehouse.fact_support_tickets GROUP BY issue_type ORDER BY avg_hours DESC")
@@ -110,18 +124,67 @@ elif page == "Customer Risk":
     st.dataframe(filtered[["name","city","segment","churn_risk_score","risk_level","total_orders","total_spent","ticket_count","avg_satisfaction","days_since_last_order"]].reset_index(drop=True), use_container_width=True, height=400)
 
 elif page == "Marketing":
+
     st.title("Marketing Performance")
+
     mkt_df = load_marketing_performance()
+
+    if mkt_df.empty:
+        st.warning("No marketing data available.")
+        st.stop()
+
     for _, row in mkt_df.iterrows():
         col1, col2, col3, col4 = st.columns(4)
+
         col1.metric("Channel", row["source"])
         col2.metric("Total Spend", f"${row['total_spend']:,.0f}")
         col3.metric("Total Revenue", f"${row['total_revenue']:,.0f}")
         col4.metric("ROAS", f"{row['roas']}x")
+
         st.divider()
-    fig = px.bar(mkt_df, x="source", y=["total_spend", "total_revenue"], barmode="group", labels={"value": "Amount ($)", "source": "Channel"}, color_discrete_map={"total_spend": "#AFA9EC", "total_revenue": "#534AB7"})
+
+    fig = px.bar(
+        mkt_df,
+        x="source",
+        y=["total_spend", "total_revenue"],
+        barmode="group",
+        labels={
+            "value": "Amount ($)",
+            "variable": "Metric",
+            "source": "Channel"
+        },
+        color_discrete_map={
+            "total_spend": "#AFA9EC",
+            "total_revenue": "#534AB7"
+        }
+    )
+
+    fig.update_layout(
+        xaxis_title="Marketing Channel",
+        yaxis_title="Amount ($)",
+        legend_title=""
+    )
+
     st.plotly_chart(fig, use_container_width=True)
 
+    fig2 = px.bar(
+        mkt_df,
+        x="source",
+        y="roas",
+        text="roas",
+        color="roas",
+        color_continuous_scale="Purples",
+        labels={
+            "source": "Channel",
+            "roas": "ROAS"
+        }
+    )
+
+    fig2.update_traces(texttemplate="%{text:.2f}x", textposition="outside")
+
+    st.plotly_chart(fig2, use_container_width=True)
+
+    st.dataframe(mkt_df, use_container_width=True)
 elif page == "Support":
     st.title("Support Performance")
     sup_df = load_support_summary()
