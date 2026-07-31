@@ -20,6 +20,7 @@ load_dotenv()
 
 st.set_page_config(
     page_title="NexusIQ — Sales Intelligence",
+    page_icon="📊",
     layout="wide"
 )
 
@@ -382,7 +383,13 @@ elif page == "AI Analyst":
                     }
                 )
 
-                sql = response.json()["choices"][0]["message"]["content"].strip()
+                response_json = response.json()
+
+                if "choices" not in response_json:
+                    st.error(f"OpenRouter error: {response_json}")
+                    st.stop()
+
+                sql = response_json["choices"][0]["message"]["content"].strip()
 
                 try:
                     rows, cols = run_cursor(sql)
