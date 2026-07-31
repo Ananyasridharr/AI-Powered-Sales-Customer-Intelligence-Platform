@@ -418,7 +418,11 @@ elif page == "AI Analyst":
                     st.session_state.mongo_history.append({"role": "user", "content": question})
                     st.session_state.mongo_history.append({"role": "assistant", "content": sql})
 
-                    mongo_client = MongoClient(os.getenv("MONGO_URI"))
+                    mongo_client = MongoClient(
+                    os.getenv("MONGO_URI"),
+                    tls=True,
+                    tlsAllowInvalidCertificates=True
+            )
                     collection = mongo_client["ai_analyst"]["conversations"]
 
                     collection.update_one(
