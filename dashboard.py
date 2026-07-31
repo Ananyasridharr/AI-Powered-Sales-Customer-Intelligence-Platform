@@ -5,8 +5,6 @@ import psycopg2
 import requests
 import os
 from dotenv import load_dotenv
-from pymongo import MongoClient
-from datetime import datetime
 
 # ============================================
 # LOAD .env FILE
@@ -15,57 +13,36 @@ from datetime import datetime
 load_dotenv()
 
 # ============================================
-# PAGE CONFIGURATION
+# PAGE CONFIGURATION — must be first line
 # ============================================
 
 st.set_page_config(
     page_title="Sales Intelligence Platform",
+    page_icon="📊",
     layout="wide"
 )
 
+# Fix for Windows psycopg2 connection caching
 os.environ["no_proxy"] = "*"
 
+
 # ============================================
-# DATABASE CONNECTION — fresh per query (Neon serverless)
+# DATABASE CONNECTION
 # ============================================
 
+@st.cache_resource
 def get_connection():
-    return psycopg2.connect(
-        os.getenv("DATABASE_URL"),
-        keepalives=1,
-        keepalives_idle=30,
-        keepalives_interval=10,
-        keepalives_count=5
-    )
+    return psycopg2.connect(os.getenv("DATABASE_URL"))
 
-def run_query(query):
-    """Run a query with automatic reconnection on failure."""
-    try:
-        conn = get_connection()
-        df = pd.read_sql(query, conn)
-        conn.close()
-        return df
-    except Exception as e:
-        st.error(f"Database error: {e}")
-        return pd.DataFrame()
-
-def run_cursor(sql):
-    """Run SQL and return rows + columns. Reconnects if needed."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(sql)
-    rows = cursor.fetchall()
-    cols = [d[0] for d in cursor.description]
-    conn.close()
-    return rows, cols
+db = get_connection()
 
 # ============================================
 # DATA LOADING FUNCTIONS
 # ============================================
 
-@st.cache_data(ttl=300)
+@st.cache_data
 def load_risk_scores():
-    return run_query("""
+    query = """
         SELECT name, city, segment,
                churn_risk_score, risk_level,
                total_orders, total_spent,
@@ -73,66 +50,76 @@ def load_risk_scores():
                days_since_last_order
         FROM warehouse.customer_risk_scores
         ORDER BY churn_risk_score DESC
-    """)
+    """
+    return pd.read_sql(query, db)
 
-@st.cache_data(ttl=300)
+@st.cache_data
 def load_revenue_by_category():
-    return run_query("""
+    query = """
         SELECT p.category,
-               SUM(o.price)      AS total_revenue,
+               SUM(o.price)    AS total_revenue,
                COUNT(o.order_id) AS total_orders
         FROM warehouse.fact_orders o
-        JOIN warehouse.dim_product p ON o.product_id = p.product_id
+        JOIN warehouse.dim_product p
+          ON o.product_id = p.product_id
         GROUP BY p.category
         ORDER BY total_revenue DESC
-    """)
+    """
+    return pd.read_sql(query, db)
 
-@st.cache_data(ttl=300)
+@st.cache_data
 def load_revenue_by_city():
-    return run_query("""
+    query = """
         SELECT c.city,
-               SUM(o.price)               AS total_revenue,
+               SUM(o.price) AS total_revenue,
                COUNT(DISTINCT o.customer_id) AS customers
         FROM warehouse.fact_orders o
-        JOIN warehouse.dim_customer c ON o.customer_id = c.customer_id
+        JOIN warehouse.dim_customer c
+          ON o.customer_id = c.customer_id
         GROUP BY c.city
         ORDER BY total_revenue DESC
         LIMIT 15
-    """)
+    """
+    return pd.read_sql(query, db)
 
-@st.cache_data(ttl=300)
+@st.cache_data
 def load_marketing_performance():
-    return run_query("""
+    query = """
         SELECT dc.source,
-               SUM(f.spend)   AS total_spend,
-               SUM(f.revenue) AS total_revenue,
-               ROUND(SUM(f.revenue) / NULLIF(SUM(f.spend), 0), 2) AS roas
+               SUM(f.spend)    AS total_spend,
+               SUM(f.revenue)  AS total_revenue,
+               ROUND(SUM(f.revenue) /
+                     NULLIF(SUM(f.spend),0), 2) AS roas
         FROM warehouse.fact_marketing_perf f
-        JOIN warehouse.dim_campaign dc ON f.campaign_id = dc.campaign_id
+        JOIN warehouse.dim_campaign dc
+          ON f.campaign_id = dc.campaign_id
         GROUP BY dc.source
         ORDER BY roas DESC
-    """)
+    """
+    return pd.read_sql(query, db)
 
-@st.cache_data(ttl=300)
+@st.cache_data
 def load_support_summary():
-    return run_query("""
+    query = """
         SELECT issue_type,
-               COUNT(*) AS ticket_count,
-               ROUND(AVG(resolution_hours)::numeric, 1)   AS avg_hours,
-               ROUND(AVG(satisfaction_score)::numeric, 2) AS avg_satisfaction
+               COUNT(*)              AS ticket_count,
+               ROUND(AVG(resolution_hours)::numeric, 1)
+                                     AS avg_hours,
+               ROUND(AVG(satisfaction_score)::numeric, 2)
+                                     AS avg_satisfaction
         FROM warehouse.fact_support_tickets
         GROUP BY issue_type
         ORDER BY avg_hours DESC
-    """)
+    """
+    return pd.read_sql(query, db)
 
 # ============================================
 # SIDEBAR NAVIGATION
 # ============================================
 
-st.sidebar.title("🧠 NexusIQ")
-st.sidebar.caption("Sales Intelligence Platform")
+st.sidebar.title("Navigation")
 page = st.sidebar.radio(
-    "Navigate",
+    "Go to",
     ["Overview", "Customer Risk", "Marketing", "Support", "AI Analyst"]
 )
 
@@ -142,15 +129,16 @@ page = st.sidebar.radio(
 
 if page == "Overview":
     st.title("Sales & Customer Intelligence")
-    st.caption("Powered by Neon PostgreSQL warehouse + AI")
+    st.caption("Powered by your PostgreSQL warehouse + AI")
 
     risk_df = load_risk_scores()
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Customers", f"{len(risk_df):,}")
     col2.metric("High Risk",
-                f"{(risk_df['risk_level'] == 'High Risk').sum():,}",
-                delta="-needs attention", delta_color="inverse")
+                f"{(risk_df['risk_level']=='High Risk').sum():,}",
+                delta="-needs attention",
+                delta_color="inverse")
     col3.metric("Avg Risk Score",
                 f"{risk_df['churn_risk_score'].mean():.1f}/100")
     col4.metric("Total Revenue",
@@ -164,25 +152,34 @@ if page == "Overview":
         st.subheader("Revenue by product category")
         cat_df = load_revenue_by_category()
         fig = px.bar(
-            cat_df, x="category", y="total_revenue",
-            color="total_revenue", color_continuous_scale="purples",
-            labels={"total_revenue": "Revenue ($)", "category": "Category"}
+            cat_df,
+            x="category",
+            y="total_revenue",
+            color="total_revenue",
+            color_continuous_scale="purples",
+            labels={"total_revenue": "Revenue ($)",
+                    "category": "Category"}
         )
-        fig.update_layout(showlegend=False, coloraxis_showscale=False)
+        fig.update_layout(showlegend=False,
+                          coloraxis_showscale=False)
         st.plotly_chart(fig, use_container_width=True)
 
     with col_right:
         st.subheader("Top 15 cities by revenue")
         city_df = load_revenue_by_city()
         fig2 = px.bar(
-            city_df, x="total_revenue", y="city", orientation="h",
-            color="total_revenue", color_continuous_scale="teal",
-            labels={"total_revenue": "Revenue ($)", "city": "City"}
+            city_df,
+            x="total_revenue",
+            y="city",
+            orientation="h",
+            color="total_revenue",
+            color_continuous_scale="teal",
+            labels={"total_revenue": "Revenue ($)",
+                    "city": "City"}
         )
-        fig2.update_layout(
-            showlegend=False, coloraxis_showscale=False,
-            yaxis={"categoryorder": "total ascending"}
-        )
+        fig2.update_layout(showlegend=False,
+                           coloraxis_showscale=False,
+                           yaxis={"categoryorder": "total ascending"})
         st.plotly_chart(fig2, use_container_width=True)
 
 # ============================================
@@ -191,7 +188,7 @@ if page == "Overview":
 
 elif page == "Customer Risk":
     st.title("Customer Churn Risk")
-    st.caption("Scores generated by Random Forest ML model")
+    st.caption("Scores generated by your Random Forest model")
 
     risk_df = load_risk_scores()
 
@@ -199,9 +196,9 @@ elif page == "Customer Risk":
     high = (risk_df["risk_level"] == "High Risk").sum()
     med  = (risk_df["risk_level"] == "Medium Risk").sum()
     low  = (risk_df["risk_level"] == "Low Risk").sum()
-    col1.metric("High Risk",   f"{high:,}", delta="score above 75")
-    col2.metric("Medium Risk", f"{med:,}",  delta="score 50–75")
-    col3.metric("Low Risk",    f"{low:,}",  delta="score below 50")
+    col1.metric("High Risk",   f"{high:,}", delta="above 75")
+    col2.metric("Medium Risk", f"{med:,}",  delta="50–75")
+    col3.metric("Low Risk",    f"{low:,}",  delta="below 50")
 
     st.divider()
 
@@ -212,12 +209,14 @@ elif page == "Customer Risk":
         dist_df = risk_df["risk_level"].value_counts().reset_index()
         dist_df.columns = ["Risk Level", "Count"]
         fig = px.pie(
-            dist_df, names="Risk Level", values="Count",
+            dist_df,
+            names="Risk Level",
+            values="Count",
             color="Risk Level",
             color_discrete_map={
-                "High Risk": "#E24B4A",
+                "High Risk":   "#E24B4A",
                 "Medium Risk": "#BA7517",
-                "Low Risk": "#1D9E75"
+                "Low Risk":    "#1D9E75"
             }
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -226,12 +225,13 @@ elif page == "Customer Risk":
         st.subheader("Risk score vs days inactive")
         fig2 = px.scatter(
             risk_df.sample(min(2000, len(risk_df))),
-            x="days_since_last_order", y="churn_risk_score",
+            x="days_since_last_order",
+            y="churn_risk_score",
             color="risk_level",
             color_discrete_map={
-                "High Risk": "#E24B4A",
+                "High Risk":   "#E24B4A",
                 "Medium Risk": "#BA7517",
-                "Low Risk": "#1D9E75"
+                "Low Risk":    "#1D9E75"
             },
             hover_data=["name", "city", "segment"],
             labels={
@@ -271,21 +271,21 @@ elif page == "Customer Risk":
 
 elif page == "Marketing":
     st.title("Marketing Performance")
-    st.caption("200 campaigns across 10 channels")
 
     mkt_df = load_marketing_performance()
 
     for _, row in mkt_df.iterrows():
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Channel",       row["source"])
+        col1.metric("Channel", row["source"])
         col2.metric("Total Spend",   f"${row['total_spend']:,.0f}")
         col3.metric("Total Revenue", f"${row['total_revenue']:,.0f}")
-        col4.metric("ROAS",          f"{row['roas']}x")
+        col4.metric("ROAS", f"{row['roas']}x")
         st.divider()
 
     st.subheader("Revenue vs Spend by channel")
     fig = px.bar(
-        mkt_df, x="source",
+        mkt_df,
+        x="source",
         y=["total_spend", "total_revenue"],
         barmode="group",
         labels={"value": "Amount ($)", "source": "Channel"},
@@ -302,21 +302,26 @@ elif page == "Marketing":
 
 elif page == "Support":
     st.title("Support Performance")
-    st.caption("20,000 support tickets analysed")
 
     sup_df = load_support_summary()
 
     st.subheader("Resolution time by issue type")
     fig = px.bar(
-        sup_df, x="avg_hours", y="issue_type", orientation="h",
-        color="avg_satisfaction", color_continuous_scale="RdYlGn",
+        sup_df,
+        x="avg_hours",
+        y="issue_type",
+        orientation="h",
+        color="avg_satisfaction",
+        color_continuous_scale="RdYlGn",
         labels={
-            "avg_hours": "Avg resolution hours",
-            "issue_type": "Issue type",
+            "avg_hours":       "Avg resolution hours",
+            "issue_type":      "Issue type",
             "avg_satisfaction": "Avg satisfaction"
         }
     )
-    fig.update_layout(yaxis={"categoryorder": "total ascending"})
+    fig.update_layout(
+        yaxis={"categoryorder": "total ascending"}
+    )
     st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Support data table")
@@ -327,7 +332,7 @@ elif page == "Support":
 # ============================================
 
 elif page == "AI Analyst":
-    st.title("🤖 AI Analyst")
+    st.title("AI Analyst")
     st.caption("Ask anything about your data in plain English")
 
     API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -341,12 +346,14 @@ elif page == "AI Analyst":
     - fact_support_tickets: ticket_id, customer_id, issue_type, resolution_hours, satisfaction_score, resolution_status, channel
     - fact_marketing_perf: campaign_id, start_date, impressions, clicks, spend, revenue
     - dim_campaign: campaign_id, campaign_name, source, goal
-    - customer_risk_scores: customer_id, name, churn_risk_score, risk_level, total_orders, total_spent, days_since_last_order
+    - customer_risk_scores: customer_id, name, churn_risk_score, risk_level
     Always use warehouse. prefix. Return ONLY raw SQL ending with semicolon.
     Never use LIMIT unless the user asks for a specific number.
     Use 'price' not 'total_amount' in fact_orders.
-    For city revenue questions JOIN fact_orders with dim_customer on customer_id.
     """
+
+    from pymongo import MongoClient
+    from datetime import datetime
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -375,58 +382,43 @@ elif page == "AI Analyst":
                         "Content-Type": "application/json"
                     },
                     json={
-                        "model": "cohere/command-r-plus",
+                        "model": "cohere/north-mini-code:free",
                         "messages": [
                             {"role": "system", "content": SCHEMA}
                         ] + st.session_state.messages
                     }
                 )
 
-                response_json = response.json()
-
-                if "choices" not in response_json:
-                    st.error(f"OpenRouter error: {response_json}")
-                    st.stop()
-
-                sql = response_json["choices"][0]["message"]["content"].strip()
+                sql = response.json()["choices"][0]["message"]["content"]
 
                 try:
-                    rows, cols = run_cursor(sql)
+                    cursor = db.cursor()
+                    cursor.execute(sql)
+                    rows = cursor.fetchall()
+                    cols = [d[0] for d in cursor.description]
                     result_df = pd.DataFrame(rows, columns=cols)
 
                     st.markdown("**SQL generated:**")
                     st.code(sql, language="sql")
                     st.markdown("**Results:**")
                     st.dataframe(result_df, use_container_width=True)
-                    st.caption(f"{len(result_df):,} rows returned")
 
                     answer = (
-                        f"Results for: *{question}* — "
-                        f"{len(result_df):,} rows returned."
+                        f"Here are the results for: *{question}*\n\n"
+                        f"Found {len(result_df)} rows."
                     )
 
                 except Exception as e:
                     answer = f"Query error: {str(e)}\n\nSQL attempted:\n```sql\n{sql}\n```"
-                    st.markdown(answer)
 
-                st.session_state.messages.append(
-                    {"role": "assistant", "content": answer}
-                )
+                st.session_state.messages.append({"role": "assistant", "content": answer})
 
                 # ── Save to MongoDB ───────────────────────────────
                 try:
-                    st.session_state.mongo_history.append(
-                        {"role": "user", "content": question}
-                    )
-                    st.session_state.mongo_history.append(
-                        {"role": "assistant", "content": sql}
-                    )
+                    st.session_state.mongo_history.append({"role": "user", "content": question})
+                    st.session_state.mongo_history.append({"role": "assistant", "content": sql})
 
-                    mongo_client = MongoClient(
-                        os.getenv("MONGO_URI"),
-                        tls=True,
-                        tlsAllowInvalidCertificates=True
-                    )
+                    mongo_client = MongoClient(os.getenv("MONGO_URI"))
                     collection = mongo_client["ai_analyst"]["conversations"]
 
                     collection.update_one(
@@ -442,4 +434,4 @@ elif page == "AI Analyst":
                     st.caption("✓ Saved to MongoDB")
 
                 except Exception as mongo_err:
-                    st.caption(f"MongoDB: {mongo_err}")
+                    st.caption(f"MongoDB error: {mongo_err}")
